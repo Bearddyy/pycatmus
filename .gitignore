@@ -7,3 +7,6 @@ app/uploads/
 out*.txt
 probe_from_hermes.txt
 *.catmus/
+*.mlmodel
+test.png
+src/*.egg-info/

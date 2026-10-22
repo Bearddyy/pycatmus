@@ -1,59 +1,105 @@
-# CATMuS Medieval HTR — local setup
+# PyCatmus
 
-Handwritten-text recognition for medieval manuscripts (Latin, Old/Middle French,
-Spanish, Italian) using **Kraken 7** + the **CATMuS Medieval 1.6** model, on
-this machine's RTX 4090.
+Handwritten-text recognition (HTR) for medieval manuscripts, powered by the
+[CATMuS Medieval](https://zenodo.org/records/21488839) model and the
+[Kraken](https://kraken.re) engine — packaged as a command-line tool and a
+local web app with word-level hover-to-source highlighting.
 
-- Folder: `C:\Users\Byrne\kraken-catmus`
-- Model: `catmus-medieval-1.6.0.mlmodel` (Zenodo record 21488839, v1.6.2, CC-BY-4.0,
-  md5 `326a6ea675661ec9ce0bb6b1958de495` — verified)
-- Segmentation: `blla.mlmodel` (generic print+handwriting line segmenter,
-  Zenodo 14602568, copied into this folder)
+Covers Latin, Old & Middle French, Iberian languages, Italian, Middle Dutch
+and Occitan Gothic hands (12th–15th century book and cursive scripts).
+Transcription is **graphematic**: abbreviations stay exactly as written
+(`uileꝰ`, not `villes`), nothing is normalised, expanded or spell-corrected.
 
-## Usage
-
-Everything goes through `catmus.py`:
+## Install
 
 ```bash
-cd C:\Users\Byrne\kraken-catmus
-.venv\Scripts\python.exe catmus.py PAGE.png OUT.txt
+pip install PyCatmus
 ```
 
-| Option | What it does |
+This gives you a CPU-only install (torch comes from PyPI). For GPU
+(NVIDIA, CUDA 12.6):
+
+```bash
+pip install PyCatmus[gpu] --extra-index-url https://download.pytorch.org/whl/cu126
+```
+
+The two model files (~21 MB total) are **not** bundled. They are downloaded
+automatically from Zenodo on first use into a local cache and verified
+against their recorded md5. To fetch them up front (e.g. on an offline
+machine):
+
+```bash
+pycatmus --download-models
+```
+
+Cache location: `%LOCALAPPDATA%\pycatmus\models` on Windows,
+`~/.local/share/pycatmus/models` on Linux (`$PYCATMUS_MODELS` overrides).
+`--model` / `--seg-model` point at any other `.mlmodel` file.
+
+## Command line
+
+```bash
+# whole page → txt
+pycatmus folio1r.png folio1r.txt
+
+# single hand-cropped line (skips page segmentation — most accurate isolate)
+pycatmus line4.png line4.txt --line
+
+# remove red ink (rubrics/strikethroughs) before OCR, and write a
+# per-word confidence overlay
+pycatmus folio1r.png out.txt --red-filter --viz overlay.png
+
+# every page matching a glob, models load once, .txt beside each image
+pycatmus --batch "C:\scans\*.png"
+
+# batch 4 ways in parallel (each worker loads the models once, ~2 GB VRAM)
+pycatmus --batch "C:\scans\*.png" --jobs 4
+
+# device: auto (default) | cpu | cuda:N
+pycatmus page.png out.txt --device cuda:0
+```
+
+| Flag | Effect |
 |---|---|
-| `--red-filter` | Removes red ink (rubrics, decorated initials, red strikethroughs) before OCR. See below. |
-| `--line` | Treat the input image as ONE text line; skips page segmentation. Best accuracy when you crop a line yourself. |
-| `--viz FILE.png` | Also write a confidence overlay: word boxes coloured by confidence, per-line mean score. |
-| `--device cpu` | Use CPU instead of the GPU. |
-| `--model / --seg-model` | Point at different .mlmodel files. |
-| `--keep-temp` | Keep the intermediate `*.catmus` folder next to the input. |
+| `--line` | input is one text line; skip segmentation |
+| `--red-filter` | erase red ink before OCR (see *Red ink* below) |
+| `--viz FILE.png` | confidence overlay: word boxes green/amber/red, per-line mean scores |
+| `--batch GLOB` | transcribe all matching images; one `.txt` per image |
+| `--jobs N` | parallel workers with `--batch` |
+| `--device auto\|cpu\|cuda:N` | compute target (default `auto`) |
+| `--model` / `--seg-model` | override recognition / segmentation model files |
+| `--keep-temp` | keep intermediate red-filter images |
+| `--download-models` | fetch both models from Zenodo and exit |
 
-Examples:
+Output is raw graphematic Unicode in NFD form (diacritics and superscripts
+are separate codepoints — some editors display spacing oddly; it is not
+corrupted). Tironian *et* comes out as `⁊`.
+
+Model warm-up (loading into GPU) costs ~10–15 s per process; for repeated
+work prefer `--batch` over one call per page.
+
+## Web app
 
 ```bash
-# whole page
-.venv\Scripts\python.exe catmus.py folio1r.png folio1r.txt
-
-# page + red-ink removal + visual confidence check
-.venv\Scripts\python.exe catmus.py folio1r.png folio1r.txt --red-filter --viz folio1r_overlay.png
-
-# one hand-cropped line
-.venv\Scripts\python.exe catmus.py line4.png line4.txt --line
-
-# batch: every page in a folder, models load ONCE for the whole run,
-# one .txt written beside each image (--red-filter/--device work too)
-.venv\Scripts\python.exe catmus.py --batch "C:\scans\*.png"
-
-# batch 4 ways in parallel: N kraken workers, pages split round-robin.
-# Each worker holds its own model copy (~2 GB VRAM) and its own ~12 s
-# warmup, so --jobs N pays off when pages/N >> warmup, i.e. larger sets.
-.venv\Scripts\python.exe catmus.py --batch "C:\scans\*.png" --jobs 4
+pycatmus-app            # http://127.0.0.1:5000
+pycatmus-app --port 8080
 ```
 
-Model warmup (load into GPU) costs ~10-15 s per process launch; for repeated
-work use `--batch` rather than one call per page.
+- **Load** a local folder or image path, or upload images. Multiple pages
+  stack scrollably in the left pane.
+- **Generate** transcribes every loaded page in one run (progress in the
+  header; a *Remove red ink* checkbox applies the red filter to the batch).
+- **Hover any word** to see its exact bounding box drawn on the page image,
+  plus a band over its source line. Low-confidence words carry an amber
+  (<0.85) or red (<0.6) underline — check those against the image.
+- **Edit** the transcription in place: click a line and type. Enter moves to
+  the next line instead of splitting, because source lineation is content.
+- **Export .txt** saves what you see (your edits included, line breaks kept);
+  **Export original .txt** saves the untouched machine output.
 
-## The red filter
+Runs locally; nothing leaves your machine.
+
+## Red ink
 
 Medieval red ink and yellowish parchment both live in the image's RED channel:
 
@@ -62,63 +108,69 @@ Medieval red ink and yellowish parchment both live in the image's RED channel:
 - yellow parchment is bright in green (its yellowness is excess red)
 
 So the filter keeps only the **green channel** as greyscale (ink stays black,
-parchment stays white) and then **paints detected red-ink pixels** — where
+parchment stays white) and paints detected red-ink pixels — where
 `red − green > 40` — up to parchment white. Strikethroughs and rubrics vanish
-instead of confusing the recogniser; on the test page this fixed a word that
-read `Srauesteds` (garbled by a red deletion) into `STANESTEDE`.
+instead of confusing the recogniser; on the sample page this fixes a word
+that reads `Srauesteds` (garbled by a red deletion) into `STANESTEDE`.
 
-The filter is lossy by design: red text (a full rubricated line) will be erased
-too. Use `--red-filter` when red is decoration/correction, omit it when red
-carries content you want transcribed.
+The filter is **lossy by design**: a fully rubricated line will be erased
+too. Use `--red-filter` when red = decoration or correction; leave it off
+when red carries content you want transcribed.
 
-## Reading the overlay
+## Reading the overlay (`--viz`)
 
 - **Word boxes**: green ≥ 0.85 mean confidence, amber 0.6–0.85, red < 0.6
 - **Underlines**: detected text lines; blue = line found but nothing recognised
 - **Numbers**: mean confidence for that line (`-` = empty)
 
-Amber/red words are the ones to check against the image.
+## Getting good results
 
-## Output conventions
-
-- Transcription is **graphematic**: abbreviations are transcribed as written,
-  never expanded (`uileꝰ` not `villes`).
-- Output is **NFD-normalised** Unicode: diacritics/superscripts are separate
-  codepoints, so some editors display spacing oddly. It's not corrupted, just
-  decomposed.
-- Tironian et comes out as `⁊`; the cropped top/bottom lines of a page
-  transcribe badly — crop them out or ignore them.
-
-## Raw Kraken (what catmus.py wraps)
-
-```bash
-.venv\Scripts\kraken.exe -d cuda:0 -i page.png out.txt ^
-    segment -i blla.mlmodel ocr -m catmus-medieval-1.6.0.mlmodel
-.venv\Scripts\kraken.exe -d cuda:0 -i line.png out.txt ocr -s -m catmus-medieval-1.6.0.mlmodel
-```
-
-Add `-h` before the subcommands to get hOCR (per-word confidence + boxes).
-
-## Environment / known pitfalls
-
-- Python 3.12 venv at `.venv`, managed with `uv`.
-- **numpy must stay < 2.5**: Kraken 7.1.1's line-crop geometry calls
-  `np.cross` on 2-D vectors, which numpy 2.5 removed — the symptom is pages
-  where only a few lines transcribe and the rest come back empty with no
-  error. If you ever see that, run:
-  `uv pip install --python .venv\Scripts\python.exe "numpy<2.5"`
-- torch is the CUDA 12.6 build (2.14.1+cu126); reinstall with
-  `uv pip install --python .venv\Scripts\python.exe --torch-backend=cu126 --force-reinstall torch torchvision`
-  if it breaks.
-- Scipy prints a numpy-version UserWarning on every run; harmless noise.
+- Flat, well-contrasted scans, ideally ≥1500 px wide. Museum photos of
+  angled books degrade badly.
+- Lines cropped at the top/bottom edge of a page transcribe poorly —
+  crop them out or ignore them.
+- For a stubborn word, crop the line tightly and run with `--line`.
+- Check the `--viz` overlay to find low-confidence words before reading.
 
 ## Model notes
 
-- CATMuS Medieval covers: Old & Middle French (best), Latin, Spanish/other
-  Iberian, Italian, Middle Dutch, Occitan. Strictly graphemic, NFD-trained.
-- It is one multilingual model — there is **no language flag** to set.
+- CATMuS Medieval is one multilingual model — there is **no language flag**.
 - Best on 12th–15th c. Gothic book hands and Gothic cursive/administrative
-  hands; scans should be flat, well-contrasted, ideally ≥ 1500 px wide.
-- Repository also has newer/related models: `kraken.exe list`, download with
-  `kraken.exe get DOI` (models land in `%LOCALAPPDATA%\htrmopo`).
-  McCATMuS (zenodo 13788176) covers 16th c.–modern for later documents.
+  hands.
+- The Kraken model repository has newer/related models: `kraken list`,
+  `kraken get DOI`. McCATMuS (Zenodo 10.5281/zenodo.13788176) covers
+  16th-century to modern hands — point `--model` at it for later documents.
+
+## Provenance and licences
+
+| Component | Licence |
+|---|---|
+| PyCatmus code | MIT |
+| CATMuS Medieval 1.6 model | [CC-BY-4.0](https://zenodo.org/records/21488839) |
+| BLLA segmentation model | Apache-2.0 (Zenodo 10.5281/zenodo.14602568) |
+| Kraken | Apache-2.0 |
+
+If you publish transcriptions made with this tool, please credit the CATMuS
+project (CREMMA, GalliCorpora, HTRomance, DEEDS; curator Thibault Clérice)
+via the model DOI, and cite Kraken (Kiessling, *ICDAR 2025*,
+doi:10.1007/978-3-032-04624-6_26). Transcription *output* itself carries no
+licence from any of these — what you may publish depends on the terms
+attached to the **source images**, not the software.
+
+## Development
+
+```bash
+git clone <this repo> && cd pycatmus
+uv venv .venv
+uv pip install -e . "numpy<2.5" torch          # + --torch-backend=cu126 for GPU
+```
+
+Pitfalls:
+
+- **numpy must stay `<2.5`** — Kraken 7.1.1's line-crop geometry calls
+  `np.cross` on 2-D vectors; numpy 2.5 removed that support and text lines
+  silently vanish (empty lines, no error). The pin is declared in
+  `pyproject.toml`.
+- On Windows consoles, child processes printing non-ASCII need
+  `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8` (handled internally).
+- Scipy prints a numpy-version `UserWarning` on every run; harmless noise.

@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "PyCatmus"
+version = "0.1.0"
+description = "Handwritten-text recognition for medieval manuscripts (CATMuS Medieval + Kraken) as a CLI and web app"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Byrne" }]
+keywords = ["htr", "ocr", "kraken", "catmus", "medieval", "latin", "palaeography"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Text Processing :: Linguistic",
+]
+dependencies = [
+    "kraken>=7.1,<8",
+    "numpy<2.5",       # kraken 7.1.1 np.cross on 2-D vectors; 2.5 removes it (silent empty lines)
+    "Pillow>=10",
+    "flask>=3",
+    "platformdirs>=4",
+]
+
+[project.optional-dependencies]
+# CUDA builds of torch are not on the default PyPI index. Install GPU support with:
+#   pip install PyCatmus[gpu] --extra-index-url https://download.pytorch.org/whl/cu126
+gpu = ["torch>=2.4"]
+
+[project.scripts]
+pycatmus = "pycatmus.cli:main"
+pycatmus-app = "pycatmus.webapp:main"
+
+[project.urls]
+Homepage = "https://github.com/byrne-dev/pycatmus"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pycatmus = ["static/*"]
+
+[tool.black]
+line-length = 100
+
+[tool.mypy]
+strict = true
+
+[tool.pylint]
+max-line-length = 100
