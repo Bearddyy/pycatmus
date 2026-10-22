@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pylintrc_cache/
+app/uploads/
+out*.txt
+probe_from_hermes.txt
+*.catmus/

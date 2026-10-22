@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CATMuS Medieval HTR</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif;
+         background: #16181d; color: #dcdce0; height: 100vh; display: flex; flex-direction: column; }
+  header { display: flex; gap: 8px; align-items: center; padding: 10px 14px;
+           background: #1f2229; border-bottom: 1px solid #2e323b; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; }
+  button, .btnlabel { background: #2e6df0; color: #fff; border: 0; border-radius: 6px;
+           padding: 7px 14px; font-size: 13px; cursor: pointer; }
+  button.secondary, .btnlabel.secondary { background: #33373f; }
+  button:disabled { opacity: .45; cursor: default; }
+  #pathInput { background: #12141a; color: #dcdce0; border: 1px solid #2e323b;
+           border-radius: 6px; padding: 7px 10px; width: 340px; font-size: 13px; }
+  #statusMsg { font-size: 12.5px; color: #9aa0ab; margin-left: auto; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #leftPane, #rightPane { flex: 1; overflow-y: auto; min-width: 0; }
+  #leftPane { border-right: 1px solid #2e323b; background: #101216; padding: 16px; }
+  #rightPane { padding: 16px 22px; background: #16181d; }
+  .pageBlock { margin-bottom: 28px; }
+  .pageLabel { font-size: 12px; color: #8b919c; margin-bottom: 6px; }
+  .imgWrap { position: relative; }
+  .imgWrap img { width: 100%; display: block; border: 1px solid #2a2e36; border-radius: 4px; }
+  #hlCanvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+              pointer-events: none; }
+  .outPage { margin-bottom: 26px; }
+  .outPage h3 { font-size: 12px; color: #8b919c; font-weight: 500;
+              border-bottom: 1px solid #262a31; padding-bottom: 4px; }
+  .trLine { white-space: pre-wrap; word-break: break-word; line-height: 1.75;
+              font-family: "Segoe UI", serif; font-size: 15px;
+              border-radius: 4px; outline: none; }
+  .trLine:hover { background: #1d222c; }
+  .trLine:focus { background: #1c222e; box-shadow: inset 0 0 0 1px #2e6df0; }
+  .w { border-radius: 3px; padding: 0 1px; cursor: default; }
+  .w:hover { background: #33475e; }
+  .w.c-low  { border-bottom: 2px solid #c0392b; }
+  .w.c-mid  { border-bottom: 2px solid #b8860b; }
+  .placeholder { color: #6b717c; font-size: 13.5px; padding: 30px 8px; }
+  #fileInput { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CATMuS Medieval HTR</h1>
+  <input id="pathInput" placeholder="Local folder or image path, e.g. C:\Users\Byrne\Downloads\test.png">
+  <button id="loadPathBtn">Load path</button>
+  <label class="btnlabel secondary" for="fileInput">Upload images…</label>
+  <input type="file" id="fileInput" multiple accept="image/*">
+  <label id="redLabel" title="Erases rubrics/strikethroughs before OCR — omit when red carries content you want transcribed"
+         style="font-size:13px;display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none">
+    <input type="checkbox" id="redFilter" style="accent-color:#2e6df0;width:14px;height:14px">
+    Remove red ink
+  </label>
+  <button id="generateBtn" disabled>Generate</button>
+  <button id="exportBtn" class="secondary" disabled>Export .txt</button>
+  <button id="exportRawBtn" class="secondary" disabled title="Server-side transcription before any of your edits">Export original .txt</button>
+  <span id="statusMsg">Load a document to begin.</span>
+</header>
+<main>
+  <div id="leftPane"><div class="placeholder">Page images appear here.</div></div>
+  <div id="rightPane"><div class="placeholder">Transcription appears here. Hover a word to locate it on the page.</div></div>
+</main>
+<script>
+let jobId = null;
+let pagesById = {};          // pageId -> {img, imgWrap, canvas, lines}
+let order = [];
+const left = document.getElementById('leftPane');
+const right = document.getElementById('rightPane');
+const statusMsg = document.getElementById('statusMsg');
+const generateBtn = document.getElementById('generateBtn');
+const exportBtn = document.getElementById('exportBtn');
+const exportRawBtn = document.getElementById('exportRawBtn');
+
+function setStatus(t) { statusMsg.textContent = t; }
+
+async function loadPath() {
+  const p = document.getElementById('pathInput').value.trim();
+  if (!p) return;
+  setStatus('Loading…');
+  const r = await fetch('/api/load_local', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({path: p})});
+  const j = await r.json();
+  if (j.error) { setStatus('Error: ' + j.error); return; }
+  setupJob(j);
+}
+
+async function uploadFiles(files) {
+  if (!files.length) return;
+  setStatus('Uploading…');
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  const r = await fetch('/api/upload', {method:'POST', body: fd});
+  const j = await r.json();
+  if (j.error) { setStatus('Error: ' + j.error); return; }
+  setupJob(j);
+}
+
+function setupJob(j) {
+  jobId = j.job_id; pagesById = {}; order = [];
+  left.innerHTML = ''; right.innerHTML = '';
+  for (const pg of j.pages) {
+    order.push(pg.id);
+    const block = document.createElement('div');
+    block.className = 'pageBlock';
+    block.innerHTML = `<div class="pageLabel">${pg.name}</div>`;
+    const wrap = document.createElement('div');
+    wrap.className = 'imgWrap';
+    const img = new Image();
+    img.src = pg.image_url;
+    img.onload = () => { canvas.width = img.naturalWidth; canvas.height = img.naturalHeight; };
+    const canvas = document.createElement('canvas');
+    canvas.id = 'hlCanvas';
+    canvas.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none';
+    wrap.append(img, canvas);
+    block.append(wrap);
+    left.append(block);
+    pagesById[pg.id] = {img, canvas, ctx: canvas.getContext('2d'), lines: null};
+    const out = document.createElement('div');
+    out.className = 'outPage'; out.id = 'out-' + pg.id;
+    out.innerHTML = `<h3>${pg.name}</h3><div class="placeholder">Not yet generated.</div>`;
+    right.append(out);
+  }
+  generateBtn.disabled = false; exportBtn.disabled = true; exportRawBtn.disabled = true;
+  setStatus(j.pages.length + ' page(s) loaded. Click Generate.');
+}
+
+function syncCanvas(pageId) {
+  const p = pagesById[pageId];
+  const c = p.canvas;
+  if (p.img.naturalWidth) {
+    c.width = p.img.naturalWidth;
+    c.height = p.img.naturalHeight;
+  }
+}
+
+async function generate() {
+  generateBtn.disabled = true;
+  setStatus('Transcribing… this loads the model (~15 s) then runs each page.');
+  await fetch('/api/generate', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({job_id: jobId,
+                          red_filter: document.getElementById('redFilter').checked})});
+  poll();
+}
+
+async function poll() {
+  const r = await fetch('/api/status/' + jobId);
+  const j = await r.json();
+  const done = j.pages.filter(p => p.status === 'done').length;
+  if (j.status === 'running') setStatus(`Transcribing… ${done}/${j.pages.length} pages`);
+  if (j.status === 'error') { setStatus('Error: ' + j.error); generateBtn.disabled = false; return; }
+  if (j.status !== 'done') { setTimeout(poll, 1000); return; }
+  render(j.pages);
+  generateBtn.disabled = false; exportBtn.disabled = false; exportRawBtn.disabled = false;
+  setStatus('Done — hover a word to highlight it on the page.');
+}
+
+function render(pages) {
+  for (const pg of pages) {
+    const out = document.getElementById('out-' + pg.id);
+    out.innerHTML = `<h3>${pg.name}</h3>`;
+    const p = pagesById[pg.id];
+    p.lines = pg.lines;
+    (pg.lines || []).forEach((ln, li) => {
+      const div = document.createElement('div');
+      div.className = 'trLine';
+      div.contentEditable = 'true';
+      div.spellcheck = false;
+      ln.words.forEach((w, wi) => {
+        const span = document.createElement('span');
+        span.className = 'w' + (w.conf != null && w.conf < 0.6 ? ' c-low'
+                       : w.conf != null && w.conf < 0.85 ? ' c-mid' : '');
+        span.textContent = w.text;
+        span.dataset.wi = wi;
+        div.append(span, ' ');
+      });
+      div.dataset.li = li;
+      div.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {          // lineation is content — never split
+          e.preventDefault();
+          const all = [...out.querySelectorAll('.trLine')];
+          const nxt = all[all.indexOf(div) + 1];
+          if (nxt) nxt.focus();
+        }
+      });
+      out.append(div);
+    });
+  }
+}
+
+// Hover via delegation so edits to the contenteditable lines can't break it.
+right.addEventListener('mouseover', e => {
+  const span = e.target.closest('.w');
+  const line = e.target.closest('.trLine');
+  if (!span || !line) return;
+  const pageId = line.closest('.outPage').id.slice(4);
+  highlight(pageId, +line.dataset.li, +span.dataset.wi);
+  scrollToPage(pageId);
+});
+right.addEventListener('mouseout', e => {
+  const span = e.target.closest('.w');
+  if (!span) return;
+  const pageId = span.closest('.outPage').id.slice(4);
+  highlight(pageId, null, null);
+});
+
+function scrollToPage(pageId) {
+  const p = pagesById[pageId];
+  const lr = document.getElementById('leftPane');
+  const ir = p.img.getBoundingClientRect();
+  const rr = lr.getBoundingClientRect();
+  // only scroll if the page image is not at all visible in the left pane
+  if (ir.bottom < rr.top + 20 || ir.top > rr.bottom - 20)
+    lr.scrollTop += ir.top - rr.top - 10;
+}
+
+function highlight(pageId, li, wi) {
+  // clear every canvas first
+  for (const id in pagesById) {
+    const p = pagesById[id];
+    if (p.ctx && (p.dirty || (id === pageId && li == null))) {
+      p.ctx.clearRect(0, 0, p.canvas.width, p.canvas.height);
+      p.dirty = false;
+    }
+  }
+  if (li == null) return;
+  const p = pagesById[pageId];
+  syncCanvas(pageId);
+  const ln = (p.lines || [])[li];
+  if (!ln) return;
+  const ctx = p.ctx;
+  // dim line band
+  const [lx0, ly0, lx1, ly1] = ln.bbox;
+  ctx.fillStyle = 'rgba(240, 180, 40, 0.10)';
+  ctx.fillRect(lx0, ly0, lx1 - lx0, ly1 - ly0);
+  // the hovered word
+  const w = ln.words[wi];
+  if (w) {
+    const [x0, y0, x1, y1] = w.bbox;
+    ctx.strokeStyle = '#f0b428';
+    ctx.lineWidth = Math.max(2, p.canvas.width / 500);
+    ctx.strokeRect(x0 - 2, y0 - 2, x1 - x0 + 4, y1 - y0 + 4);
+    ctx.fillStyle = 'rgba(240, 180, 40, 0.28)';
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  }
+  p.dirty = true;
+}
+
+document.getElementById('loadPathBtn').onclick = loadPath;
+document.getElementById('pathInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') loadPath();
+});
+document.getElementById('fileInput').addEventListener('change', e => uploadFiles([...e.target.files]));
+generateBtn.onclick = generate;
+function download(text, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], {type: 'text/plain;charset=utf-8'}));
+  a.download = name;
+  a.click();
+}
+// Export = exactly what's in the right pane, edits included, source lineation kept.
+exportBtn.onclick = () => {
+  const parts = [];
+  right.querySelectorAll('.outPage').forEach(op => {
+    op.querySelectorAll('.trLine').forEach(ln => parts.push(ln.innerText.replace(/\u00a0/g, ' ')));
+    parts.push('');   // blank line between pages
+  });
+  download(parts.join('\n').replace(/\n+$/, '') + '\n', 'transcription.txt');
+};
+// Export original = server-side model output, ignoring every edit.
+exportRawBtn.onclick = () => {
+  fetch('/api/export', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({job_id: jobId})})
+    .then(r => r.blob()).then(b => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(b);
+      a.download = 'transcription_original.txt';
+      a.click();
+    });
+};
+</script>
+</body>
+</html>
