@@ -30,11 +30,14 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 
 
 def image_extensions() -> set[str]:
+    """File suffixes accepted as page images."""
     return set(_IMAGE_EXTS)
 
 
 @dataclass
 class Word:
+    """One recognised word with its pixel box and mean confidence."""
+
     text: str
     bbox: tuple[int, int, int, int]
     conf: float | None = None
@@ -42,12 +45,16 @@ class Word:
 
 @dataclass
 class Line:
+    """One written line: bounding box plus its words in reading order."""
+
     bbox: tuple[int, int, int, int]
     words: list[Word] = field(default_factory=list)
 
 
 @dataclass
 class PageResult:
+    """Transcription of a single page image."""
+
     source: Path
     lines: list[Line]
     hocr: str | None = None
@@ -86,15 +93,24 @@ def parse_hocr(html: str) -> list[Line]:
     """Parse kraken hOCR into lines/words with bounding boxes and confidences."""
     lines: list[Line] = []
     for lm in _HOCR_LINE_RE.finditer(html):
-        lbbox = tuple(int(x) for x in lm.groups())
-        assert lbbox is not None
+        lbbox: tuple[int, int, int, int] = (
+            int(lm.group(1)),
+            int(lm.group(2)),
+            int(lm.group(3)),
+            int(lm.group(4)),
+        )
         seg = html[lm.end() :]
         nxt = _HOCR_LINE_RE.search(seg)
         if nxt:
             seg = seg[: nxt.start()]
         words: list[Word] = []
         for wm in _HOCR_WORD_RE.finditer(seg):
-            bbox = tuple(int(x) for x in wm.groups()[:4])
+            bbox: tuple[int, int, int, int] = (
+                int(wm.group(1)),
+                int(wm.group(2)),
+                int(wm.group(3)),
+                int(wm.group(4)),
+            )
             conf_s = (wm.group(5) or "").strip().rstrip(";")
             conf: float | None = None
             if conf_s:
@@ -110,10 +126,23 @@ def parse_hocr(html: str) -> list[Line]:
                 .replace("&quot;", '"')
                 .replace("&#39;", "'")
             )
-            assert bbox is not None
             words.append(Word(text=text, bbox=bbox, conf=None if conf is None else round(conf, 3)))
         lines.append(Line(bbox=lbbox, words=[w for w in words if w.text.strip()]))
     return lines
+
+
+def lines_from_predictions(preds: list[Any]) -> list[Line]:
+    """Build Line records straight from kraken prediction objects (no hOCR).
+
+    Prediction records (BaselineOCRRecord/BBoxOCRRecord) double as line
+    geometry: they expose either ``bbox`` directly or ``to_bbox()``.
+    """
+    out: list[Line] = []
+    for rec in preds:
+        raw = rec.bbox if getattr(rec, "bbox", None) is not None else rec.to_bbox().bbox
+        bbox = (int(raw[0]), int(raw[1]), int(raw[2]), int(raw[3]))
+        out.append(Line(bbox=bbox, words=[Word(text=rec.prediction, bbox=bbox)]))
+    return out
 
 
 class Engine:
@@ -174,9 +203,10 @@ class Engine:
             src = filt
 
         im = Image.open(src)
-        mode = im.mode
-        if mode not in ("L", "RGB"):
+        if im.mode not in ("L", "RGB"):
             im = im.convert("L")
+        dev = dict(self.device)
+        dev["raise_on_error"] = True
 
         if single_line:
             bounds = Segmentation(
@@ -187,25 +217,13 @@ class Engine:
                 lines=[BBoxLine(id="_full", bbox=(0, 0, im.width, im.height))],
             )
         else:
-            bounds = self.seg.predict(
-                im,
-                SegmentationInferenceConfig(
-                    accelerator=self.device["accelerator"],
-                    device=self.device["device"],
-                    raise_on_error=True,
-                ),
-            )
+            bounds = self.seg.predict(im, SegmentationInferenceConfig(**dev))
 
         preds = list(
             self.rec.predict(
                 im=im,
                 segmentation=bounds,
-                config=RecognitionInferenceConfig(
-                    accelerator=self.device["accelerator"],
-                    device=self.device["device"],
-                    batch_size=self.batch_size,
-                    raise_on_error=True,
-                ),
+                config=RecognitionInferenceConfig(**dev, batch_size=self.batch_size),
             )
         )
         results = dataclasses.replace(bounds, lines=preds, imagename=str(src))
@@ -223,18 +241,8 @@ class Engine:
             )
             lines = parse_hocr(hocr)
         else:
-            # plain-text fast path: no word boxes needed
-            from kraken.containers import BaselineLine
-
-            plain_lines: list[Line] = []
-            for ln, r in zip(results.lines, preds):
-                bbox: tuple[int, int, int, int]
-                if isinstance(ln, BaselineLine):
-                    bbox = ln.to_bbox().bbox
-                else:
-                    bbox = tuple(int(x) for x in ln.bbox)  # type: ignore[attr-defined]
-                plain_lines.append(Line(bbox=bbox, words=[Word(text=r.prediction, bbox=bbox)]))
-            lines = plain_lines
+            # plain-text fast path: predictions carry their own line geometry
+            lines = lines_from_predictions(preds)
         return PageResult(source=page, lines=lines, hocr=hocr)
 
     def transcribe_batch(
@@ -251,9 +259,7 @@ class Engine:
 def iter_images(path: Path) -> list[Path]:
     """Images in *path* (a folder) or *[path]* if it is a file."""
     if path.is_dir():
-        return sorted(
-            q for q in path.iterdir() if q.suffix.lower() in _IMAGE_EXTS and q.is_file()
-        )
+        return sorted(q for q in path.iterdir() if q.suffix.lower() in _IMAGE_EXTS and q.is_file())
     if path.is_file() and path.suffix.lower() in _IMAGE_EXTS:
         return [path]
     return []

@@ -14,9 +14,7 @@ from pathlib import Path
 
 from platformdirs import user_data_dir
 
-MODEL_CACHE = Path(
-    os.environ.get("PYCATMUS_MODELS", Path(user_data_dir("pycatmus")) / "models")
-)
+MODEL_CACHE = Path(os.environ.get("PYCATMUS_MODELS", Path(user_data_dir("pycatmus")) / "models"))
 
 # name -> (zenodo record id, filename, md5). Pinned to specific *version*
 # records (not concept DOIs) so the md5 stays valid.
@@ -36,6 +34,9 @@ _MODELS: dict[str, dict[str, str]] = {
         "license": "Apache-2.0",
     },
 }
+
+#: public alias for the table of known model names
+KNOWN_MODELS = _MODELS
 
 
 def download(name: str, dest_dir: Path | None = None, quiet: bool = False) -> Path:
@@ -83,9 +84,7 @@ def resolve(name: str, override: Path | None = None) -> Path:
     if dest.is_file():
         return dest
     # models fetched with `kraken get` land here — reuse instead of re-downloading
-    from platformdirs import user_data_dir as _udd
-
-    for cand in (_udd("htrmopo"), Path.cwd() / filename):
+    for cand in (user_data_dir("htrmopo"), Path.cwd()):
         hit = Path(cand) / filename
         if hit.is_file():
             return hit

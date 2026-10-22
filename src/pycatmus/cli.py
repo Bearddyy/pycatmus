@@ -1,73 +1,108 @@
 """pycatmus command-line interface.
 
-Mimics the original catmus.py CLI flag-for-flag:
+Mimics the original catmus.py CLI flag-for-flag::
 
-  pycatmus PAGE.png OUT.txt
-  pycatmus LINE.png OUT.txt --line
-  pycatmus PAGE.png OUT.txt --red-filter --viz overlay.png
-  pycatmus --batch "C:\\scans\\*.png" [--jobs N]
+    pycatmus PAGE.png OUT.txt
+    pycatmus LINE.png OUT.txt --line
+    pycatmus PAGE.png OUT.txt --red-filter --viz overlay.png
+    pycatmus --batch "C:\\scans\\*.png" [--jobs N]
 """
 
 from __future__ import annotations
 
 import argparse
 import glob as globmod
+import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-from . import __version__, core, models
+from PIL import Image, ImageDraw, ImageFont
+
+from . import __version__, models
+from .core import Engine, image_extensions, preflight_write_check, verify_output
+
+
+@dataclass
+class Options:
+    """Parsed CLI options."""
+
+    input: Path | None = None
+    output: Path | None = None
+    batch: str | None = None
+    batch_list: Path | None = None
+    line: bool = False
+    red_filter: bool = False
+    viz: Path | None = None
+    device: str = "auto"
+    model: Path | None = None
+    seg_model: Path | None = None
+    keep_temp: bool = False
+    jobs: int = 1
+    download_models: bool = False
+
+
+_TMP = Path(tempfile.gettempdir()) / "pycatmus"
 
 
 def make_overlay(page: Path, hocr: str, out: Path) -> None:
     """Confidence overlay: word boxes coloured by confidence, per-line mean."""
-    import re
-
-    from PIL import Image, ImageDraw, ImageFont
-
-    words = []
+    words: list[tuple[int, int, int, int, list[float]]] = []
     for m in re.finditer(
         r'ocrx_word"[^>]*title="bbox (\d+) (\d+) (\d+) (\d+); x_confs ([^";]+)', hocr
     ):
-        x0, y0, x1, y1 = map(int, m.groups()[:4])
         confs = [float(c) for c in m.group(5).split() if c != "None"]
-        tm = re.search(r">([^<]+)</span>", hocr[m.end() : m.end() + 200])
-        words.append((x0, y0, x1, y1, confs, tm.group(1).strip() if tm else ""))
+        words.append(
+            (
+                int(m.group(1)),
+                int(m.group(2)),
+                int(m.group(3)),
+                int(m.group(4)),
+                confs,
+            )
+        )
 
-    line_boxes = [
-        tuple(map(int, m.groups()))
+    line_boxes: list[tuple[int, int, int, int]] = [
+        (
+            int(m.group(1)),
+            int(m.group(2)),
+            int(m.group(3)),
+            int(m.group(4)),
+        )
         for m in re.finditer(r'ocr_line"[^>]*title="bbox (\d+) (\d+) (\d+) (\d+)', hocr)
     ]
 
     im = Image.open(page).convert("RGB")
     dr = ImageDraw.Draw(im)
     try:
-        font = ImageFont.truetype("C:/Windows/Fonts/arialbd.ttf", 12)
+        font: ImageFont.FreeTypeFont | None = ImageFont.truetype("C:/Windows/Fonts/arialbd.ttf", 12)
     except OSError:
         font = None
 
     def color(c: float) -> tuple[int, int, int]:
-        return (
-            (255, 40, 40) if c < 0.6 else (255, 170, 0) if c < 0.85 else (40, 220, 80)
-        )
+        if c < 0.6:
+            return (255, 40, 40)
+        if c < 0.85:
+            return (255, 170, 0)
+        return (40, 220, 80)
 
     line_words: dict[int, list[float]] = {}
-    for x0, y0, x1, y1, confs, _t in words:
+    for x0, y0, x1, y1, confs in words:
         if not confs:
             continue
         c = sum(confs) / len(confs)
         ymid = (y0 + y1) / 2
         xmid = (x0 + x1) / 2
-        dr.rectangle([x0, y0, x1, y1], outline=color(c), width=2)
+        dr.rectangle((x0, y0, x1, y1), outline=color(c), width=2)
         for li, (lx0, ly0, lx1, ly1) in enumerate(line_boxes):
             if ly0 <= ymid <= ly1 and lx0 <= xmid <= lx1:
                 line_words.setdefault(li, []).append(c)
                 break
     for li, (lx0, ly0, lx1, ly1) in enumerate(line_boxes):
         cs = line_words.get(li, [])
-        s = sum(cs) / len(cs) if cs else -1
+        s = sum(cs) / len(cs) if cs else -1.0
         col = (0, 140, 255) if not cs else color(s)
         dr.line([lx0, ly1 - 2, lx1, ly1 - 2], fill=col, width=1)
         dr.text(
@@ -81,9 +116,8 @@ def make_overlay(page: Path, hocr: str, out: Path) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(
-        prog="pycatmus", description="CATMuS Medieval HTR transcription"
-    )
+    """Argument parser for the ``pycatmus`` console script."""
+    ap = argparse.ArgumentParser(prog="pycatmus", description="CATMuS Medieval HTR transcription")
     ap.add_argument("--version", action="version", version=f"pycatmus {__version__}")
     ap.add_argument("input", type=Path, nargs="?", help="page image (or use --batch)")
     ap.add_argument("output", type=Path, nargs="?", help="output .txt (or use --batch)")
@@ -93,21 +127,13 @@ def build_parser() -> argparse.ArgumentParser:
         help='transcribe every image matching a glob, e.g. "C:\\scans\\*.png"; '
         "one .txt per image beside it (models load once for the whole run)",
     )
-    ap.add_argument(
-        "--line", action="store_true", help="input image is a single text line"
-    )
-    ap.add_argument(
-        "--red-filter", action="store_true", help="remove red ink before OCR"
-    )
-    ap.add_argument(
-        "--viz", type=Path, metavar="PNG", help="also write a confidence overlay image"
-    )
+    ap.add_argument("--line", action="store_true", help="input image is a single text line")
+    ap.add_argument("--red-filter", action="store_true", help="remove red ink before OCR")
+    ap.add_argument("--viz", type=Path, metavar="PNG", help="also write a confidence overlay image")
     ap.add_argument("--device", default="auto", help="auto|cpu|cuda:N (default auto)")
     ap.add_argument("--model", type=Path, help="recognition .mlmodel override")
     ap.add_argument("--seg-model", type=Path, help="segmentation .mlmodel override")
-    ap.add_argument(
-        "--keep-temp", action="store_true", help="keep intermediate red-filter images"
-    )
+    ap.add_argument("--keep-temp", action="store_true", help="keep intermediate red-filter images")
     ap.add_argument(
         "--jobs",
         type=int,
@@ -121,106 +147,127 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="fetch the CATMuS Medieval and BLLA models from Zenodo and exit",
     )
+    ap.add_argument("--batch-list", type=Path, help=argparse.SUPPRESS)  # internal
     return ap
 
 
-def run_single(args: argparse.ArgumentParser) -> None:
-    if not (args.input and args.output):
-        sys.exit("give INPUT OUTPUT, or use --batch GLOB")
-    if not args.input.is_file():
-        sys.exit(f"input image not found: {args.input}")
-    core.preflight_write_check(args.output)
+def to_options(ns: argparse.Namespace) -> Options:
+    """Convert argparse output to a typed Options record."""
+    return Options(
+        input=ns.input,
+        output=ns.output,
+        batch=ns.batch,
+        batch_list=ns.batch_list,
+        line=ns.line,
+        red_filter=ns.red_filter,
+        viz=ns.viz,
+        device=ns.device,
+        model=ns.model,
+        seg_model=ns.seg_model,
+        keep_temp=ns.keep_temp,
+        jobs=ns.jobs,
+        download_models=ns.download_models,
+    )
 
-    engine = core.Engine(
-        device=args.device, rec_model=args.model, seg_model=args.seg_model
+
+def _engine(opts: Options) -> Engine:
+    return Engine(device=opts.device, rec_model=opts.model, seg_model=opts.seg_model)
+
+
+def _scratch(opts: Options) -> Path | None:
+    return _TMP if (opts.red_filter or opts.viz) else None
+
+
+def _overlay_source(page: Path, opts: Options) -> Path:
+    """The page image the OCR actually consumed (filtered copy if red-filtered)."""
+    if opts.red_filter:
+        cand = _TMP / (page.stem + "_pycatmus_nored.png")
+        if cand.is_file():
+            return cand
+    return page
+
+
+def run_single(opts: Options) -> None:
+    """Transcribe one page image to one .txt (plus optional overlay)."""
+    if opts.input is None or opts.output is None:
+        sys.exit("give INPUT OUTPUT, or use --batch GLOB")
+    if not opts.input.is_file():
+        sys.exit(f"input image not found: {opts.input}")
+    preflight_write_check(opts.output)
+
+    result = _engine(opts).transcribe_page(
+        opts.input,
+        single_line=opts.line,
+        red_ink=opts.red_filter,
+        want_hocr=bool(opts.viz),
+        scratch=_scratch(opts),
     )
-    tmp: Path | None = None
-    if args.red_filter or args.viz:
-        tmp = Path(tempfile.gettempdir()) / "pycatmus"
-    result = engine.transcribe_page(
-        args.input,
-        single_line=args.line,
-        red_ink=args.red_filter,
-        want_hocr=bool(args.viz),
-        scratch=tmp,
-    )
-    if args.viz:
+    if opts.viz is not None:
         if result.hocr is None:  # pragma: no cover - want_hocr=True above
             sys.exit("internal error: no hOCR produced for overlay")
-        page = args.input
-        if args.red_filter and tmp is not None:
-            page = tmp / (args.input.stem + "_pycatmus_nored.png")
-        make_overlay(page, result.hocr, args.viz)
-    args.output.write_text(result.text + "\n", encoding="utf-8")
-    core.verify_output(args.output)
-    if tmp is not None and not args.keep_temp:
-        for junk in tmp.glob(f"{args.input.stem}_pycatmus_*"):
+        make_overlay(_overlay_source(opts.input, opts), result.hocr, opts.viz)
+    opts.output.write_text(result.text + "\n", encoding="utf-8")
+    verify_output(opts.output)
+    if _scratch(opts) is not None and not opts.keep_temp:
+        for junk in _TMP.glob(f"{opts.input.stem}_pycatmus_*"):
             junk.unlink(missing_ok=True)
 
 
-def run_batch(args: argparse.ArgumentParser) -> None:
-    if args.line:
+def _write_page_result(page: Path, text: str, hocr: str | None, opts: Options) -> None:
+    if opts.viz and hocr:
+        make_overlay(_overlay_source(page, opts), hocr, page.with_suffix(".overlay.png"))
+    out = page.with_suffix(".txt")
+    out.write_text(text + "\n", encoding="utf-8")
+    print(f"wrote {out.resolve()}")
+
+
+def run_batch(opts: Options) -> None:
+    """Transcribe every image matching a glob, models loaded once."""
+    if opts.line:
         sys.exit("--batch works on page images, not single lines")
+    if opts.batch is None:
+        sys.exit("--batch GLOB required")
     pages = sorted(
-        Path(p)
-        for p in globmod.glob(str(args.batch))
-        if Path(p).suffix.lower() in core.image_extensions()
+        Path(p) for p in globmod.glob(opts.batch) if Path(p).suffix.lower() in image_extensions()
     )
     if not pages:
-        sys.exit(f"no images match: {args.batch}")
-    core.preflight_write_check(pages[0].with_suffix(".txt"))
+        sys.exit(f"no images match: {opts.batch}")
+    preflight_write_check(pages[0].with_suffix(".txt"))
 
-    if args.jobs > 1:
-        _run_sharded(args, pages)
+    if opts.jobs > 1:
+        run_sharded(opts, pages)
         return
 
-    engine = core.Engine(
-        device=args.device, rec_model=args.model, seg_model=args.seg_model
-    )
     failures = 0
     for (result, err), page in zip(
-        engine.transcribe_batch(
+        _engine(opts).transcribe_batch(
             pages,
-            red_ink=args.red_filter,
-            want_hocr=bool(args.viz),
-            scratch=Path(tempfile.gettempdir()) / "pycatmus"
-            if (args.red_filter or args.viz)
-            else None,
+            red_ink=opts.red_filter,
+            want_hocr=bool(opts.viz),
+            scratch=_scratch(opts),
         ),
         pages,
     ):
-        if err is not None:
+        if err is not None or result is None:
             failures += 1
             print(f"FAILED {page}: {err}", file=sys.stderr)
             continue
-        assert result is not None
-        if args.viz and result.hocr:
-            src = page
-            if args.red_filter:
-                cand = (
-                    Path(tempfile.gettempdir())
-                    / "pycatmus"
-                    / (page.stem + "_pycatmus_nored.png")
-                )
-                if cand.is_file():
-                    src = cand
-            make_overlay(src, result.hocr, page.with_suffix(".overlay.png"))
-        out = page.with_suffix(".txt")
-        out.write_text(result.text + "\n", encoding="utf-8")
-        print(f"wrote {out.resolve()}")
+        _write_page_result(page, result.text, result.hocr, opts)
     if failures:
         sys.exit(f"{failures} page(s) failed")
 
 
-def _run_sharded(args: argparse.ArgumentParser, pages: list[Path]) -> None:
+def run_sharded(opts: Options, pages: list[Path]) -> None:
     """Round-robin sharding over N subprocesses (models load once per worker)."""
     procs: list[tuple[list[Path], subprocess.Popen[str]]] = []
-    for shard in range(args.jobs):
-        chunk = pages[shard :: args.jobs]
+    manifests: list[Path] = []
+    for shard in range(opts.jobs):
+        chunk = pages[shard :: opts.jobs]
         if not chunk:
             continue
         manifest = Path(tempfile.gettempdir()) / f"pycatmus_shard_{shard}.lst"
         manifest.write_text("\n".join(str(p) for p in chunk), encoding="utf-8")
+        manifests.append(manifest)
         cmd = [
             sys.executable,
             "-m",
@@ -228,18 +275,18 @@ def _run_sharded(args: argparse.ArgumentParser, pages: list[Path]) -> None:
             "--batch-list",
             str(manifest),
             "--device",
-            args.device,
+            opts.device,
         ]
-        if args.red_filter:
+        if opts.red_filter:
             cmd.append("--red-filter")
-        if args.model:
-            cmd += ["--model", str(args.model)]
-        if args.seg_model:
-            cmd += ["--seg-model", str(args.seg_model)]
+        if opts.model:
+            cmd += ["--model", str(opts.model)]
+        if opts.seg_model:
+            cmd += ["--seg-model", str(opts.seg_model)]
         procs.append(
             (
                 chunk,
-                subprocess.Popen(
+                subprocess.Popen(  # pylint: disable=consider-using-with
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -250,62 +297,58 @@ def _run_sharded(args: argparse.ArgumentParser, pages: list[Path]) -> None:
             )
         )
     failed = False
-    for chunk, p in procs:
-        err = p.stderr.read() if p.stderr else ""
+    for chunk, proc in procs:
+        err = proc.stderr.read() if proc.stderr else ""
         if err.strip():
             sys.stderr.write(err.rstrip() + "\n")
-        if p.wait() != 0:
+        if proc.wait() != 0:
             failed = True
-            print(f"worker failed on: {', '.join(p_.name for p_ in chunk)}", file=sys.stderr)
+            names = ", ".join(p.name for p in chunk)
+            print(f"worker failed on: {names}", file=sys.stderr)
         else:
-            for s in chunk:
-                print(f"wrote {s.with_suffix('.txt').resolve()}")
-    for manifest_done in (
-        Path(tempfile.gettempdir()) / f"pycatmus_shard_{i}.lst" for i in range(args.jobs)
-    ):
-        manifest_done.unlink(missing_ok=True)
+            for p in chunk:
+                print(f"wrote {p.with_suffix('.txt').resolve()}")
+    for manifest in manifests:
+        manifest.unlink(missing_ok=True)
     if failed:
         sys.exit("one or more parallel workers failed")
 
 
-def main(argv: list[str] | None = None) -> None:
-    ap = build_parser()
-    ap.add_argument("--batch-list", type=Path, help=argparse.SUPPRESS)  # internal
-    args = ap.parse_args(argv)
+def run_shard_worker(opts: Options) -> None:
+    """Worker mode: transcribe the pages listed in a --batch-list manifest."""
+    assert opts.batch_list is not None
+    pages = [
+        Path(ln) for ln in opts.batch_list.read_text(encoding="utf-8").splitlines() if ln.strip()
+    ]
+    failures = 0
+    for (result, err), page in zip(
+        _engine(opts).transcribe_batch(pages, red_ink=opts.red_filter, want_hocr=False),
+        pages,
+    ):
+        if err is not None or result is None:
+            failures += 1
+            print(f"FAILED {page}: {err}", file=sys.stderr)
+            continue
+        page.with_suffix(".txt").write_text(result.text + "\n", encoding="utf-8")
+    if failures:
+        sys.exit(1)
 
-    if args.download_models:
-        for name in models._MODELS:  # noqa: SLF001 - deliberate iteration
+
+def main(argv: list[str] | None = None) -> None:
+    """Entry point for the ``pycatmus`` console script."""
+    opts = to_options(build_parser().parse_args(argv))
+
+    if opts.download_models:
+        for name in models.KNOWN_MODELS:
             models.download(name)
         return
-
-    if args.batch_list:
-        # shard worker: transcribe the pages named in a manifest file
-        pages = [
-            Path(ln)
-            for ln in args.batch_list.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-        ]
-        engine = core.Engine(
-            device=args.device, rec_model=args.model, seg_model=args.seg_model
-        )
-        failures = 0
-        for (result, err), page in zip(
-            engine.transcribe_batch(pages, red_ink=args.red_filter), pages
-        ):
-            if err is not None:
-                failures += 1
-                print(f"FAILED {page}: {err}", file=sys.stderr)
-                continue
-            assert result is not None
-            page.with_suffix(".txt").write_text(result.text + "\n", encoding="utf-8")
-        if failures:
-            sys.exit(1)
+    if opts.batch_list is not None:
+        run_shard_worker(opts)
         return
-
-    if args.batch:
-        run_batch(args)
+    if opts.batch is not None:
+        run_batch(opts)
     else:
-        run_single(args)
+        run_single(opts)
 
 
 if __name__ == "__main__":

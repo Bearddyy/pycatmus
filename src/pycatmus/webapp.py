@@ -24,33 +24,41 @@ app = Flask(__name__, static_folder=str(STATIC))
 
 JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
-_ENGINE: Engine | None = None
+_ENGINES: dict[str, Engine] = {}
 ENGINE_LOCK = threading.Lock()
 
 
 def get_engine(device: str) -> Engine:
     """One Engine per device string, built lazily and reused."""
-    global _ENGINE
     with ENGINE_LOCK:
-        if _ENGINE is None or getattr(_ENGINE, "_pycatmus_device", None) != device:
-            _ENGINE = Engine(device=device)
-            _ENGINE._pycatmus_device = device  # type: ignore[attr-defined]
-        return _ENGINE
+        engine = _ENGINES.get(device)
+        if engine is None:
+            engine = Engine(device=device)
+            _ENGINES[device] = engine
+        return engine
+
+
+def _err(message: str, code: int = 400) -> Response:
+    """JSON error response with status."""
+    response = jsonify(error=message)
+    response.status_code = code
+    return response
 
 
 @app.route("/")
 def index() -> Response:
+    """Serve the single-page front-end."""
     return send_from_directory(STATIC, "index.html")
 
 
 @app.route("/api/load_local", methods=["POST"])
 def load_local() -> Response:
-    """Load every image from a local folder path, or a single image file."""
+    """Register every image from a local folder path or single file."""
     body = request.get_json(silent=True) or {}
     p = Path(str(body.get("path", "")))
     files = core.iter_images(p)
     if not files:
-        return jsonify(error=f"no images found at: {p}"), 400  # type: ignore[return-value]
+        return _err(f"no images found at: {p}", 400)
     job_id = uuid.uuid4().hex[:12]
     job_dir = UPLOADS / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -67,14 +75,15 @@ def load_local() -> Response:
             "order": [pg["id"] for pg in pages],
             "status": "loaded",
         }
-    return jsonify(job_id=job_id, pages=pages)  # type: ignore[return-value]
+    return jsonify(job_id=job_id, pages=pages)
 
 
 @app.route("/api/upload", methods=["POST"])
 def upload() -> Response:
+    """Register uploaded image files as a job."""
     files = request.files.getlist("files")
     if not files:
-        return jsonify(error="no files"), 400  # type: ignore[return-value]
+        return _err("no files", 400)
     job_id = uuid.uuid4().hex[:12]
     job_dir = UPLOADS / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -85,18 +94,16 @@ def upload() -> Response:
             continue
         dest = job_dir / f"{i:03d}_{name}"
         fs.save(dest)
-        pages.append(
-            {"id": f"{i:03d}", "name": name, "image_url": f"/api/image/{job_id}/{i:03d}"}
-        )
+        pages.append({"id": f"{i:03d}", "name": name, "image_url": f"/api/image/{job_id}/{i:03d}"})
     if not pages:
-        return jsonify(error="no supported images"), 400  # type: ignore[return-value]
+        return _err("no supported images", 400)
     with JOBS_LOCK:
         JOBS[job_id] = {
             "pages": {pg["id"]: pg for pg in pages},
             "order": [pg["id"] for pg in pages],
             "status": "loaded",
         }
-    return jsonify(job_id=job_id, pages=pages)  # type: ignore[return-value]
+    return jsonify(job_id=job_id, pages=pages)
 
 
 def _orig_image(job_dir: Path, page_id: str) -> Path | None:
@@ -110,9 +117,10 @@ def _orig_image(job_dir: Path, page_id: str) -> Path | None:
 
 @app.route("/api/image/<job_id>/<page_id>")
 def image(job_id: str, page_id: str) -> Response:
+    """Serve a loaded page image (tif converted for browsers)."""
     img = _orig_image(UPLOADS / job_id, page_id)
     if img is None:
-        return jsonify(error="no such image"), 404  # type: ignore[return-value]
+        return _err("no such image", 404)
     if img.suffix.lower() in (".tif", ".tiff"):
         png = img.with_suffix(".shown.png")
         if not png.exists():
@@ -125,6 +133,7 @@ def image(job_id: str, page_id: str) -> Response:
 
 @app.route("/api/generate", methods=["POST"])
 def generate() -> Response:
+    """Start background transcription of every page in the job."""
     body = request.get_json(silent=True) or {}
     job_id = str(body.get("job_id", ""))
     red = bool(body.get("red_filter"))
@@ -132,7 +141,7 @@ def generate() -> Response:
     with JOBS_LOCK:
         job = JOBS.get(job_id)
     if not job:
-        return jsonify(error="unknown job"), 404  # type: ignore[return-value]
+        return _err("unknown job", 404)
 
     def worker() -> None:
         job["status"] = "running"
@@ -161,8 +170,7 @@ def generate() -> Response:
                     {
                         "bbox": list(ln.bbox),
                         "words": [
-                            {"text": w.text, "bbox": list(w.bbox), "conf": w.conf}
-                            for w in ln.words
+                            {"text": w.text, "bbox": list(w.bbox), "conf": w.conf} for w in ln.words
                         ],
                     }
                     for ln in result.lines
@@ -174,15 +182,16 @@ def generate() -> Response:
             job["error"] = str(exc)
 
     threading.Thread(target=worker, daemon=True).start()
-    return jsonify(started=True)  # type: ignore[return-value]
+    return jsonify(started=True)
 
 
 @app.route("/api/status/<job_id>")
 def status(job_id: str) -> Response:
+    """Report per-page transcription status and results."""
     with JOBS_LOCK:
         job = JOBS.get(job_id)
     if not job:
-        return jsonify(error="unknown job"), 404  # type: ignore[return-value]
+        return _err("unknown job", 404)
     pages = [
         {
             "id": pid,
@@ -193,7 +202,7 @@ def status(job_id: str) -> Response:
         }
         for pid in job["order"]
     ]
-    return jsonify(status=job["status"], error=job.get("error"), pages=pages)  # type: ignore[return-value]
+    return jsonify(status=job["status"], error=job.get("error"), pages=pages)
 
 
 @app.route("/api/export", methods=["POST"])
@@ -203,7 +212,7 @@ def export() -> Response:
     job_id = str(body.get("job_id", ""))
     job = JOBS.get(job_id)
     if not job:
-        return jsonify(error="unknown job"), 404  # type: ignore[return-value]
+        return _err("unknown job", 404)
     parts: list[str] = []
     for pid in job["order"]:
         for ln in job["pages"][pid].get("lines") or []:
@@ -221,6 +230,7 @@ def export() -> Response:
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Entry point for the ``pycatmus-app`` console script."""
     import argparse
 
     ap = argparse.ArgumentParser(prog="pycatmus-app", description="PyCatmus web app")
