@@ -1,3 +1,5 @@
+PIP Package WIP.
+
 # PyCatmus
 
 Handwritten-text recognition (HTR) for medieval manuscripts, powered by the
