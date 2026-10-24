@@ -98,6 +98,9 @@ pycatmus-app --port 8080
   the next line instead of splitting, because source lineation is content.
 - **Export .txt** saves what you see (your edits included, line breaks kept);
   **Export original .txt** saves the untouched machine output.
+- **Save HTML** exports a single self-contained file (page images embedded,
+  edited transcription, hover-to-locate intact) that opens in any browser —
+  no Python, no network. Read-only snapshot, not a live editor.
 
 Runs locally; nothing leaves your machine.
 
@@ -127,10 +130,44 @@ when red carries content you want transcribed.
 
 ## Getting good results
 
+**What the models actually see.** The recogniser crops each text line and
+resizes it internally, so page size does not matter — **line height in
+pixels is the currency**. Rules that came out of real pages:
+
+- Aim for **50–120 px line height** in the image you feed. Below ~35 px
+  superscripts, macrons and Tironian `⁊` dissolve; above ~150 px nothing
+  improves (the recogniser downsamples anyway) — you only burn GPU.
+- A full folio of ~35 lines ≈ **2,500–4,000 px wide**; archival scans at
+  300–400 DPI sit in the sweet spot. 600 DPI adds nothing.
+- **Small images (phone photos, resized attachments) rescue well with
+  ×2–3 Lanczos upscaling.** Harmless to the recogniser, and often decisive
+  for the segmenter.
+- **White padding fixes shattered segmentation.** A page whose text touches
+  the image borders makes BLLA glue neighbouring rows together (observed:
+  ~20 lines → 71 fragments). Adding a ~20–25 % white band around the image
+  restored 13/13 correct lines on the same photo. Padding is not a crop —
+  no pixels are lost.
+- **Never crop mid-line.** Lines sliced by the photo edge transcribe badly
+  and the missing part is unrecoverable; flag them instead.
+- Whole pages beat paragraph crops: the segmenter uses layout context
+  (baseline rhythm, margins) that a tight crop removes. If you must crop,
+  crop generously with margin and add padding.
+- **JPEG is fine** (doc-quality ≥ 85): artefacts only hurt when they eat
+  thin marks — macrons, superscripts, hairline strokes. PNG is strictly
+  better if you have it; never re-save a JPEG through several generations,
+  and transcoding JPEG→PNG recovers nothing.
+
+**Know the model's training domain.** CATMuS Medieval reads Gothic Latin/
+French-era hands; it produces confident garbage on anything outside:
+Anglo-Saxon square minuscule fails completely, 17th-c. court hand fails,
+18th-c. copperplate shatters. For post-1500 English hands use McCATMuS
+(`--model`, Zenodo 10.5281/zenodo.13788176); for anything else, treat the
+raw output as a layout guide and verify per line with `--line`.
+
+Also:
+
 - Flat, well-contrasted scans, ideally ≥1500 px wide. Museum photos of
   angled books degrade badly.
-- Lines cropped at the top/bottom edge of a page transcribe poorly —
-  crop them out or ignore them.
 - For a stubborn word, crop the line tightly and run with `--line`.
 - Check the `--viz` overlay to find low-confidence words before reading.
 
@@ -176,3 +213,7 @@ Pitfalls:
 - On Windows consoles, child processes printing non-ASCII need
   `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8` (handled internally).
 - Scipy prints a numpy-version `UserWarning` on every run; harmless noise.
+- BLLA can raise `TopologyException: side location conflict` on some
+  upscaled inputs (invalid predicted polygons). Observed on a 2–3× enlarged
+  copperplate page; retry at native scale + white padding instead — do not
+  treat it as corrupt input.
