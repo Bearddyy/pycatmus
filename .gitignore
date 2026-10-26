@@ -9,5 +9,6 @@ probe_from_hermes.txt
 *.catmus/
 *.mlmodel
 test.png
+.figscratch/
 src/*.egg-info/
 src/pycatmus/uploads/

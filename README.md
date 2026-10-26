@@ -104,6 +104,62 @@ pycatmus-app --port 8080
 
 Runs locally; nothing leaves your machine.
 
+## How it works
+
+All four figures below come from one real run on a Domesday-Book folio
+(Latin, Gothic cursive, red rubrics and strikethroughs).
+
+![Colour input vs model input](docs/img/how1-redfilter.png)
+
+**1. Red-ink filter.** Medieval red ink and yellowish parchment both live in
+the image's RED channel: dark brown/black ink is dark in *every* channel, red
+ink is dark only in green/blue, and parchment's yellowness is excess red. The
+filter keeps the green channel as greyscale (ink stays black, parchment stays
+white) and paints pixels where `red − green > 40` up to white. The right-hand
+panel is literally what the models receive: rubrics and red strikethroughs
+over *BRACHINGES HUND* and *STANESTEDE* are gone, so they can't garble the
+black text they cross. The filter is lossy by design — a fully rubricated
+line is erased too — so it is opt-in (`--red-filter`) for when red means
+decoration or cancellation, not content.
+
+**2. Line detection.** The BLLA segmenter runs on that filtered page and
+returns true line geometry, not rectangles: a curved **boundary polygon**
+hugging each line's ascenders and descenders, and a **baseline** following
+its wavy rhythm. The recogniser crops each line *along the polygon* — which
+is why tilted, ruled-less hands read well.
+
+![Segmentation geometry](docs/img/how1b-segmentation.png)
+
+Purple outlines are text regions, green the per-line boundary polygons, rose
+the baselines, each line numbered. (Run on the filtered page, so the red
+rubrics that survive as ghosts here are outside any line and never
+recognised.)
+
+**3. Line extraction.** Every line is lifted out of the **original colour
+scan** at the geometry found on the filtered page: the cut follows the
+contour exactly — parchment appears only inside the shape, the navy canvas
+shows through outside — with the red contour drawn over it and the
+recognised text beside it. Because the boxes come from the red-free image
+but the pixels come from the colour original, the crops show the real
+parchment without the distractors that were removed before reading.
+
+![Line crops](docs/img/how2-line-crops.png)
+
+**4. Word extraction.** hOCR word boxes (also produced by the filtered run,
+with per-word confidences) are transposed back onto the colour page the same
+way. The word below — `Rannulfo`, conf 0.997 — is cut with its line's own
+curved contour, clipped to the word's horizontal extent: top is the parent
+line with the word boxed in amber, bottom is the word lifted from the
+colour parchment.
+
+![Word extract](docs/img/how3-word-crop.png)
+
+Hovering any word in the web app draws exactly this box on the page image —
+the same coordinates, computed the same way.
+
+Figures are reproducible with
+`python scripts/make_howitworks_figures.py <page.jpg> [word-substring]`.
+
 ## Red ink
 
 Medieval red ink and yellowish parchment both live in the image's RED channel:

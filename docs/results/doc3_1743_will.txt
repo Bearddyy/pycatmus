@@ -1,0 +1,44 @@
+DOC 3 — 1743 WILL (Merrondom/Stansted area) — PARTIAL
+======================================================
+Segmentation shredded this loose hand: the raw output below arrives in wrong
+order fragments. A reconstruction is given, but confidence is LOW on several
+lines and it leans on what the fragments can support. Better scan needed.
+
+RAW McCATMuS OUTPUT (verbatim; note scrambled line order):
+---
+Merondom
+Sept 16 [rendered 'prh 3' / '43' fragments]
+nahe thir my fast vill ans
+Deplement ans matre.
+Tlemileerr abott my
+Lrst Ches Slanbrois hoale and Voule Cesctior
+la mue ground cnt noz
+ncéathe le my
+Stille twventz pounds le
+My -- DBereit my
+sole te allmigfely god aud my
+bewill ans fursen Masen
+Ce pard by esuter as he seelh fite
+le his et Sistonce oy preugers heu e aand
+---
+
+RECONSTRUCTION FROM FRAGMENTS (uncertain words marked [?]; do NOT trust
+unmarked lines as verified — this hand needs a real scan or fine-tune):
+---
+[place] Merrondom [?], Sept 16 1743
+I make this my last Will and Testament and make Chas [Slanbrois -> Hankin?]
+of Stansted [Abbott] my hoale [whole] and sole Executor
+I committ my sole [soul] to allmighty god and my body to the ground
+and I <bequeath> [Susan Mason] Stills [?] twenty pounds to be paid by my
+Executor as he seeth fite [fit] ... <the> sistence [assistance] of
+bringin[g] him up ...
+---
+
+FRAGMENT→WORD KEY (what maps to what in the raw):
+  "nahe thir my fast vill"        = "I make this my last will"
+  "Deplement ans matre"           = "and Testament ..."
+  "Ches Slanbrois hoale and Voule Cesctior" = "Chas [name] ... whole and sole Executor"
+  "sole te allmigfely god aud my" = "soul to Almighty God and my body..."
+  "Stille twventz pounds le"      = "twenty pounds ..."
+  "as he seelh fite"              = "as he seeth fit"
+---
