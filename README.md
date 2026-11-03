@@ -227,14 +227,40 @@ Also:
 - For a stubborn word, crop the line tightly and run with `--line`.
 - Check the `--viz` overlay to find low-confidence words before reading.
 
-## Model notes
+## Injecting other models
 
-- CATMuS Medieval is one multilingual model — there is **no language flag**.
-- Best on 12th–15th c. Gothic book hands and Gothic cursive/administrative
-  hands.
-- The Kraken model repository has newer/related models: `kraken list`,
-  `kraken get DOI`. McCATMuS (Zenodo 10.5281/zenodo.13788176) covers
-  16th-century to modern hands — point `--model` at it for later documents.
+PyCatmus is CATMuS Medieval by default, but **any Kraken `.mlmodel` can be
+injected** — the recognition model is a plain file argument. (CATMuS Medieval
+is one multilingual model — there is **no language flag** to set.)
+
+```bash
+pycatmus page.png out.txt --model path/to/other.mlmodel
+pycatmus page.png out.txt --seg-model path/to/other-segmenter.mlmodel
+pycatmus --batch "scans/*.jpg" --model path/to/other.mlmodel   # loaded once
+```
+
+Fetch models from the Kraken model repository with
+`kraken list` / `kraken get <DOI>` (direct Zenodo URLs hit download blocks;
+the Kraken CLI path works). Files land in the htrmopo cache — copy them next
+to the others or pass the path explicitly; paths into the htrmopo cache
+inside Kraken have crashed on Windows, absolute paths in `%LOCALAPPDATA%\pycatmus\models`
+do not. Never fine-tune two different-domain models (e.g. CATMuS Medieval +
+McCATMuS) into one checkpoint — pick the model by document date/script.
+
+### Models we actually run
+
+| Model | Source | Domain | Measured behaviour |
+|---|---|---|---|
+| **CATMuS Medieval 1.6** (default) | Zenodo 21488839 | 12th–15th c. Gothic Latin/French; book + cursive/administrative hands | Near-perfect on tidy Gothic cursive (Domesday-exchequer demo page); confident garbage on Anglo-Saxon minuscule, 17th-c. court hand; shatters on 18th-c. copperplate |
+| **McCATMuS** | Zenodo 10.5281/zenodo.13788176 | 16th c.–present, incl. English | ≈85–90 % on clean post-1650 will/court hands (systematic `s→q`, `d→cl`, `u→oo` errors); dense secretary hands drop to ≈40–50 % with garbled lower lines — cross-validate against a second engine |
+| **BLLA** (segmenter, `--seg-model`) | Zenodo 10.5281/zenodo.14602568 | general print + handwriting | Default page segmenter; weak below ~1000 px width (upscale ×2 first); can throw `TopologyException` on upscaled pages — fall back to native scale + padding |
+
+Routing rule of thumb: medieval Gothic → default; post-1500 English →
+McCATMuS; anything else → expect fragments, use `--line` on crops and
+verify by eye. If you regularly work a script none of these reads, the
+ketos fine-tune loop is the upgrade path (`ketos train -i`) — fine-tune
+**one** base model on ~10 transcribed pages rather than hunting for a
+unicorn checkpoint.
 
 ## Provenance and licences
 
